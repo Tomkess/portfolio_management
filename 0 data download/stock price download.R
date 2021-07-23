@@ -1,15 +1,19 @@
 # ----- Loading Library -----
+library("tidyquant")
+library("BatchGetSymbols")
 library("readr")
 library("readxl")
+library("dplyr")
+library("data.table")
 
 # ----- Connect to Board -----
-pins::board_register_local(name = "Portfolio Management")
+pins::board_register_local(name = board_nm)
 
 # ----- Read Tickers -----
 list_cp <- 
   read_excel("0 data download/patria tickers/MarginCP.xlsx", 
              skip = 2) %>% 
-  pins::pin(x = ., name = "MarginCP", board = "Portfolio Management")
+  pins::pin(x = ., name = "MarginCP", board = board_nm)
 
 # ----- set dates -----
 first.date <- as.Date("2016-01-01")
@@ -86,8 +90,6 @@ modelling_data <-
   # replace missing volumes
   dplyr::mutate(volume = dplyr::if_else(is.na(volume), 0, volume)) %>% 
   
-  # ----- FILLING -----
-  
   # backward fill
   dplyr::group_by(ticker) %>% 
   dplyr::arrange(dt) %>% 
@@ -102,5 +104,5 @@ modelling_data <-
   as.data.frame() %>% 
   pins::pin(x = .,
             name = "md_stock_prices",
-            board = "Portfolio Management", 
+            board = board_nm, 
             description = "Stock Price Data")

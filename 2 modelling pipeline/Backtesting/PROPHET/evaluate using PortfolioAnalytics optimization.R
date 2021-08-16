@@ -1,8 +1,9 @@
-library("ROI")
-library("ROI.plugin.alabama")
-library("tidyquant")
-library("plotly")
+library("PerformanceAnalytics")
+library("quantmod")
+library("xts")
+library("zoo")
 library("tidyverse")
+library("PortfolioAnalytics")
 
 # ---- Load Estimated PROPHET Models -----
 load("./tmp/estimated prophet model - tmp.RData")
@@ -84,12 +85,6 @@ asset_returns <-
   tidyr::unnest(c(pred_returns)) %>%
   dplyr::filter(!(ticker %in% c("DPW", "SOAN"))) %>% 
   as.data.frame() %>% 
-  
-  # dplyr::filter(created_at == rebalancing_dates %>% 
-  #                 dplyr::arrange(created_at) %>% 
-  #                 dplyr::slice(1) %>% 
-  #                 dplyr::pull(created_at)) %>% 
-  
   dplyr::distinct() %>% 
   
   tidyr::spread(., ticker, ret) %>% 
@@ -98,60 +93,43 @@ asset_returns <-
   dplyr::mutate_if(is.numeric, function(x) dplyr::if_else(is.na(x), 0, x)) %>% 
   as.data.frame()
 
-portfolio_df <- list()
-count <- 1
 
 for (i in unique(asset_returns$created_at)) {
   
   print(i)
   
-  cov_mtx <- 
-    cov(asset_returns %>% 
-          dplyr::filter(created_at == i) %>% 
-          dplyr::select(-created_at, -ds))
-  
-  stats_tbl <- asset_returns %>%
+  index_df <- asset_returns %>% 
     dplyr::filter(created_at == i) %>% 
-    tidyr::gather(., ticker, daily_return, -created_at, -ds) %>% 
-    dplyr::group_by(ticker) %>% 
-    summarise(
-      mean  = mean(daily_return),
-      stdev = sd(daily_return)
-    )
+    dplyr::select(-created_at)
+  rownames(index_df) <- index_df$ds
+  index_df$ds <- NULL
+  Index_return <- as.xts(index_df)
   
-  calc_portfolio_variance <- function(weights) {
-    t(weights) %*% (cov_mtx %*% weights) %>% as.vector()
-  }
+  #Create Portfolio Specification
+  port_spec <- 
+    portfolio.spec(asset_returns %>% 
+                     dplyr::filter(created_at == i) %>% 
+                     dplyr::select(-created_at, -ds) %>% 
+                     names())
   
-  calc_portfolio_return <- function(weights) {
-    stats <- stats_tbl$mean
-    sum(stats * weights)
-  }
+  #Add Objective
+  port_spec <- add.objective(port_spec, type = 'return', name = 'mean')
   
-  n_assets <- nrow(stats_tbl)
-  model_nlp <- OP(
-    objective   = F_objective(F = calc_portfolio_return, 
-                              n = n_assets, 
-                              names = stats_tbl$ticker),
-    constraints = rbind(
-      F_constraint(F = calc_portfolio_variance, dir = "<=", rhs = 0.01),
-      
-      L_constraint(diag(n_assets), rep(">=", n_assets), rep(0, n_assets)),
-      L_constraint(diag(n_assets), rep("<=", n_assets), rep(1, n_assets)),
-      L_constraint(rep(1, n_assets), "==", 1)
-    ),
-    maximum = T
-  )
+  #Add Constraint
+  port_spec <- add.constraint(port_spec, type = 'full_investment')
+  port_spec <- add.constraint(port_spec, type = 'box', 
+                              min = rep(0, ncol(asset_returns) - 2), 
+                              max = rep(1, ncol(asset_returns) - 2))
   
-  sol <- 
-    ROI_solve(model_nlp, 
-              solver = "alabama", 
-              start = rep(1/n_assets, n_assets))
+  #Single Period Optimization
+  opt <- optimize.portfolio(Index_return, 
+                            port_spec, 
+                            optimize_method = 'random')
   
   portfolio_df[[count]] <- 
     data.frame("created_at" = i,
-               "ticker" = names(sol$solution),
-               "weight" = as.numeric(sol$solution))
+               "ticker" = names(extractWeights(opt)),
+               "weight" = as.numeric(extractWeights(opt)))
   count <- count + 1
 }
 
@@ -209,7 +187,7 @@ portfolio_results_df <-
     low_returns = sum(low_ret * weight),
     close_returns = sum(close_ret * weight),
     adj_returns = sum(adj_ret * weight),
-    ) %>% 
+  ) %>% 
   dplyr::ungroup() %>% 
   as.data.frame() %>% 
   
